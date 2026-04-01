@@ -910,26 +910,36 @@ const ETAPAS = [
 
 const AVATARES_CORES = ['#f97316','#3b82f6','#22c55e','#a855f7','#ef4444','#06b6d4'];
 
-let clientes = JSON.parse(localStorage.getItem('jp_clientes') || '[]');
+let clientes = [];
 let clienteEditandoIdx = -1;
 
-if (clientes.length === 0) {
-  // seed demo
-  const hoje = new Date();
-  const ontem = new Date(); ontem.setDate(hoje.getDate()-1);
-  const amanha = new Date(); amanha.setDate(hoje.getDate()+1);
-  clientes = [
-    { id:1, nome:'Trans. Irmãos Costa', wpp:'33988887777', cidade:'Governador Valadares', segmento:'transportadora', interesse:'Pastilha freio Volvo FH 460', valor:1850, etapa:'negociando', followupDate: ontem.toISOString(), obs:'Frota de 8 caminhões, cliente antigo', avatarCor:'#f97316', createdAt: new Date(Date.now()-5*86400000).toISOString() },
-    { id:2, nome:'Oficina Diesel Jr', wpp:'33977776666', cidade:'Teófilo Otoni', segmento:'oficina', interesse:'Jogo retentores câmbio Mercedes 1618', valor:620, etapa:'proposta', followupDate: hoje.toISOString(), obs:'Precisando urgente, caminhão parado', avatarCor:'#3b82f6', createdAt: new Date(Date.now()-2*86400000).toISOString() },
-    { id:3, nome:'Const. Pedra Azul', wpp:'33966665555', cidade:'Pedra Azul', segmento:'construcao', interesse:'Filtros ar motor Scania 124', valor:480, etapa:'contato', followupDate: hoje.toISOString(), obs:'Gerente de manutenção é o Marcos', avatarCor:'#22c55e', createdAt: new Date(Date.now()-1*86400000).toISOString() },
-    { id:4, nome:'Agro Mucuri Ltda', wpp:'33955554444', cidade:'Novo Cruzeiro', segmento:'agro', interesse:'Rolamento cubo roda MAN TGX', valor:940, etapa:'fechado', followupDate: amanha.toISOString(), obs:'Comprou 4 unidades', avatarCor:'#a855f7', createdAt: new Date(Date.now()-3*86400000).toISOString() },
-    { id:5, nome:'Guincho São Pedro', wpp:'33944443333', cidade:'Teófilo Otoni', segmento:'guincho', interesse:'Sensor de rotação Iveco Trakker', valor:390, etapa:'prospecto', followupDate: amanha.toISOString(), obs:'Indicado pela Trans. Costa', avatarCor:'#06b6d4', createdAt: new Date().toISOString() },
-  ];
-  salvarStorage();
+// ─── SERVIDOR (sincronização entre dispositivos) ──────────────────────────────
+const BASE = window.location.hostname === 'localhost' || window.location.protocol === 'file:'
+  ? 'https://jp-servidor.onrender.com'
+  : '';
+
+async function carregarDoServidor() {
+  try {
+    const r = await fetch(BASE + '/clientes');
+    const data = await r.json();
+    clientes = data;
+    renderDashboard();
+  } catch(e) {
+    console.warn('Servidor offline, usando localStorage');
+    clientes = JSON.parse(localStorage.getItem('jp_clientes') || '[]');
+    renderDashboard();
+  }
 }
 
-function salvarStorage() {
+async function salvarStorage() {
   localStorage.setItem('jp_clientes', JSON.stringify(clientes));
+  try {
+    await fetch(BASE + '/clientes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clientes)
+    });
+  } catch(e) { console.warn('Erro ao salvar no servidor'); }
 }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
@@ -1607,7 +1617,13 @@ function conectarServidor() {
 
     es.onmessage = (e) => {
       const evento = JSON.parse(e.data);
-      console.log('[SSE] Evento:', evento);
+
+      if (evento.tipo === 'clientes') {
+        clientes = evento.clientes;
+        localStorage.setItem('jp_clientes', JSON.stringify(clientes));
+        renderDashboard();
+        return;
+      }
 
       if (evento.tipo === 'nova_mensagem') {
         // Toca som e mostra alerta
@@ -1706,6 +1722,7 @@ renderDashboard();
 iniciarMonitor();
 atualizarMonitorFila();
 conectarServidor();
+carregarDoServidor();
 </script>
 </body>
 </html>
