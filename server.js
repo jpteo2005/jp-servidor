@@ -12,11 +12,12 @@ const ZAPI_TOKEN       = process.env.ZAPI_TOKEN       || 'SEU_TOKEN';
 const ZAPI_CLIENT_TOKEN= process.env.ZAPI_CLIENT_TOKEN|| 'SEU_CLIENT_TOKEN';
 const MEU_NUMERO       = process.env.MEU_NUMERO       || '5533XXXXXXXXX';
 
-// ─── ESTADO ───────────────────────────────────────────────────────────────────
+// ─── BANCO DE DADOS EM MEMÓRIA (sincronizado entre dispositivos) ──────────────
+let clientes = []; // array de leads/clientes
 const naoAtendidas = new Map();
 const sseClients = new Set();
 
-// ─── SSE — tempo real para o CRM ─────────────────────────────────────────────
+// ─── SSE — tempo real ─────────────────────────────────────────────────────────
 app.get('/eventos', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -24,26 +25,62 @@ app.get('/eventos', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
   sseClients.add(res);
-  const atual = [...naoAtendidas.values()];
-  if (atual.length > 0) {
-    res.write(`data: ${JSON.stringify({ tipo: 'estado_atual', mensagens: atual })}\n\n`);
-  }
-  req.on('close', () => { sseClients.delete(res); });
+  // manda estado atual para quem conectou
+  res.write(`data: ${JSON.stringify({ tipo: 'clientes', clientes })}\n\n`);
+  req.on('close', () => sseClients.delete(res));
 });
 
 function broadcast(evento) {
   const payload = `data: ${JSON.stringify(evento)}\n\n`;
-  sseClients.forEach(client => {
-    try { client.write(payload); } catch (e) { sseClients.delete(client); }
-  });
+  sseClients.forEach(c => { try { c.write(payload); } catch(e) { sseClients.delete(c); } });
 }
+
+// ─── CLIENTES (CRUD) ──────────────────────────────────────────────────────────
+
+// Listar todos
+app.get('/clientes', (req, res) => res.json(clientes));
+
+// Salvar lista completa (sincronização)
+app.post('/clientes', (req, res) => {
+  clientes = req.body;
+  broadcast({ tipo: 'clientes', clientes });
+  res.json({ ok: true });
+});
+
+// Adicionar um cliente
+app.post('/clientes/add', (req, res) => {
+  const c = req.body;
+  clientes.push(c);
+  broadcast({ tipo: 'clientes', clientes });
+  res.json({ ok: true, cliente: c });
+});
+
+// Atualizar um cliente
+app.put('/clientes/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const idx = clientes.findIndex(c => c.id === id);
+  if (idx >= 0) {
+    clientes[idx] = { ...clientes[idx], ...req.body };
+    broadcast({ tipo: 'clientes', clientes });
+    res.json({ ok: true });
+  } else {
+    res.status(404).json({ erro: 'Cliente não encontrado' });
+  }
+});
+
+// Remover um cliente
+app.delete('/clientes/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  clientes = clientes.filter(c => c.id !== id);
+  broadcast({ tipo: 'clientes', clientes });
+  res.json({ ok: true });
+});
 
 // ─── WEBHOOK Z-API ────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   const body = req.body;
-  if (body.fromMe) return;
-  if (body.isGroup) return;
+  if (body.fromMe || body.isGroup) return;
   if (!body.text && !body.audio) return;
 
   const telefone = body.phone;
@@ -53,9 +90,7 @@ app.post('/webhook', async (req, res) => {
 
   if (naoAtendidas.has(telefone)) {
     const entry = naoAtendidas.get(telefone);
-    entry.ultimaMsg = texto;
     entry.totalMsgs = (entry.totalMsgs || 1) + 1;
-    naoAtendidas.set(telefone, entry);
     broadcast({ tipo: 'nova_mensagem', telefone, nome, texto, totalMsgs: entry.totalMsgs });
     return;
   }
@@ -72,11 +107,10 @@ app.post('/webhook', async (req, res) => {
     await enviarAlertaZap(nome, telefone, texto, minutos);
     broadcast({ tipo: 'lembrete', telefone, nome, minutos });
   }, 60 * 1000);
-
   entry.timers.push(interval);
 });
 
-// ─── MARCAR COMO ATENDIDO ────────────────────────────────────────────────────
+// ─── ATENDIDO ────────────────────────────────────────────────────────────────
 app.post('/atendido', (req, res) => {
   const { telefone } = req.body;
   if (naoAtendidas.has(telefone)) {
@@ -88,44 +122,27 @@ app.post('/atendido', (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── LISTAR NÃO ATENDIDAS ────────────────────────────────────────────────────
-app.get('/nao-atendidas', (req, res) => {
-  res.json([...naoAtendidas.values()].map(e => ({
-    telefone: e.telefone, nome: e.nome, texto: e.texto,
-    chegouEm: e.chegouEm, totalMsgs: e.totalMsgs,
-  })));
-});
-
 // ─── STATUS ───────────────────────────────────────────────────────────────────
-app.get('/status', (req, res) => {
-  res.json({ status: 'ok', app: 'JP Auto Peças', naoAtendidas: naoAtendidas.size });
-});
+app.get('/status', (req, res) => res.json({ status: 'ok', clientes: clientes.length, naoAtendidas: naoAtendidas.size }));
 
-// ─── CRM (página principal) ───────────────────────────────────────────────────
+// ─── CRM ESTÁTICO ────────────────────────────────────────────────────────────
 app.use(express.static('public'));
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/public/index.html');
-});
+app.get('/', (req, res) => res.sendFile(__dirname + '/public/index.html'));
 
-// ─── ENVIAR ALERTA VIA Z-API ─────────────────────────────────────────────────
+// ─── ALERTA Z-API ─────────────────────────────────────────────────────────────
 async function enviarAlertaZap(nome, telefone, texto, minutos) {
   const msg = minutos === 0
-    ? `🔔 *NOVA MENSAGEM — JP Auto Peças*\n\n👤 *${nome}*\n📞 ${telefone}\n💬 "${texto}"\n\n_Abra o CRM para atender._`
-    : `🚨 *SEM RESPOSTA HÁ ${minutos} MIN!*\n\n👤 *${nome}* ainda aguarda\n💬 "${texto}"\n\n_Atenda agora no CRM!_`;
+    ? `🔔 *NOVA MENSAGEM — JP Auto Peças*\n\n👤 *${nome}*\n📞 ${telefone}\n💬 "${texto}"\n\n_Acesse o CRM:_\nhttps://jp-servidor.onrender.com`
+    : `🚨 *SEM RESPOSTA HÁ ${minutos} MIN!*\n\n👤 *${nome}* ainda aguarda\n💬 "${texto}"\n\n_Atenda agora:_\nhttps://jp-servidor.onrender.com`;
   try {
-    const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-text`;
-    await fetch(url, {
+    await fetch(`https://api.z-api.io/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-text`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
       body: JSON.stringify({ phone: MEU_NUMERO, message: msg }),
     });
-  } catch (e) {
-    console.error('[Z-API] Erro:', e.message);
-  }
+  } catch(e) { console.error('[Z-API] Erro:', e.message); }
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`\n🚀 JP Auto Peças — Servidor rodando na porta ${PORT}\n`);
-});
+app.listen(PORT, () => console.log(`\n🚀 JP Auto Peças — Porta ${PORT}\n`));
