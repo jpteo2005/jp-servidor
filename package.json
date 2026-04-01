@@ -1,0 +1,18 @@
+{
+  "name": "jp-autopecas-servidor",
+  "version": "1.0.0",
+  "description": "Servidor webhook Z-API para JP Auto Peças",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
